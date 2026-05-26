@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.example text eol=lf
+*.jpg binary
+*.jpeg binary
+*.png binary

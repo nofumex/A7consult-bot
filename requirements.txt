@@ -1,0 +1,6 @@
+aiogram==3.23.0
+SQLAlchemy==2.0.36
+aiosqlite==0.20.0
+python-dotenv==1.2.2
+aiohttp==3.13.5
+google-auth[requests]==2.36.0
