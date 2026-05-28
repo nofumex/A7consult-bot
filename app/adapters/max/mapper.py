@@ -101,7 +101,7 @@ def parse_update(update: dict[str, Any]) -> IncomingEvent | None:
         username=user.get("username"),
         first_name=user.get("first_name") or user.get("name"),
         last_name=user.get("last_name"),
-        text=_text_from_update(update),
+        text="/start" if update_type == "bot_started" else _text_from_update(update),
         contact_phone=_contact_phone(update),
         callback_data=(callback.get("payload") or callback.get("data")) if update_type == "message_callback" else None,
         callback_id=callback.get("callback_id") or callback.get("id"),

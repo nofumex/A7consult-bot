@@ -264,6 +264,9 @@ async def handle_update(client: MaxBotClient, event: IncomingEvent, settings: Se
         if await _relay_chat_message(client, event, session, user):
             return
 
+        if event.text:
+            await send(client, event, welcome_text(), keyboards.main_menu())
+
 
 async def _handle_callback(client: MaxBotClient, event: IncomingEvent, session, settings: Settings, user: User, data: str) -> None:
     if data == "user:main":
