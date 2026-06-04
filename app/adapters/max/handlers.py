@@ -439,6 +439,18 @@ async def _handle_new_client_state(client: MaxBotClient, event: IncomingEvent, s
         lead = await get_lead(session, data["lead_id"])
         if lead:
             await update_agent_client_lead(session, lead, relation_to_agent=relation)
+        await set_state(session, event.platform_user_id, "new_client_source_permission", data)
+        await send(client, event, "Можно ли сообщить, что номер получили от вас?")
+    elif state == "new_client_source_permission":
+        permission = clean_text(event.text, 255) or "не указано"
+        data["source_permission"] = permission
+        lead = await get_lead(session, data["lead_id"])
+        if lead:
+            await update_agent_client_lead(
+                session,
+                lead,
+                comment=f"Можно ли сообщить, что номер получили от вас? {permission}",
+            )
         await set_state(session, event.platform_user_id, "new_client_payout_phone", data)
         await send(client, event, "По какому номеру с вами связываться для выплаты бонуса?")
     elif state == "new_client_payout_phone":

@@ -5,6 +5,7 @@ class AgentClientStates(StatesGroup):
     waiting_name = State()
     waiting_phone = State()
     waiting_relation = State()
+    waiting_source_permission = State()
     waiting_payout_phone = State()
 
 

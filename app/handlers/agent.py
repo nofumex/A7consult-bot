@@ -96,6 +96,19 @@ async def new_client_relation(message: Message, state: FSMContext, session: Asyn
     if lead:
         await update_agent_client_lead(session, lead, relation_to_agent=relation)
     await state.update_data(relation_to_agent=relation)
+    await state.set_state(AgentClientStates.waiting_source_permission)
+    await message.answer("Можно ли сообщить, что номер получили от вас?")
+
+
+@router.message(AgentClientStates.waiting_source_permission, ~F.text.startswith("/"))
+async def new_client_source_permission(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    permission = clean_text(message.text, 255) or "не указано"
+    comment = f"Можно ли сообщить, что номер получили от вас? {permission}"
+    data = await state.get_data()
+    lead = await get_lead(session, data["lead_id"])
+    if lead:
+        await update_agent_client_lead(session, lead, comment=comment)
+    await state.update_data(source_permission=permission)
     await state.set_state(AgentClientStates.waiting_payout_phone)
     await message.answer("По какому номеру с вами связываться для выплаты бонуса?")
 
