@@ -12,36 +12,15 @@ class MaxButton:
 
 
 MaxKeyboard = list[list[MaxButton]]
-MAIN_MENU_TEXT = "\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e"
-MAIN_MENU_CALLBACK = "user:main"
 
 
 def _btn(text: str, callback_data: str | None = None, url: str | None = None, request_contact: bool = False) -> MaxButton:
     return MaxButton(text=text, callback_data=callback_data, url=url, request_contact=request_contact)
 
 
-def main_menu_button() -> MaxButton:
-    return _btn(MAIN_MENU_TEXT, MAIN_MENU_CALLBACK)
-
-
-def main_menu_only() -> MaxKeyboard:
-    return [[main_menu_button()]]
-
-
-def with_main_menu(keyboard: MaxKeyboard | None) -> MaxKeyboard | None:
-    if not keyboard:
-        return keyboard
-    for row in keyboard:
-        for button in row:
-            if button.callback_data == MAIN_MENU_CALLBACK or button.text == MAIN_MENU_TEXT:
-                return keyboard
-    return [*keyboard, [main_menu_button()]]
-
-
 def to_attachments(keyboard: MaxKeyboard | None) -> list[dict] | None:
     if not keyboard:
         return None
-    keyboard = with_main_menu(keyboard)
     rows = []
     for row in keyboard:
         buttons = []

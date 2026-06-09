@@ -6,7 +6,7 @@ from typing import Any
 
 import aiohttp
 
-from app.adapters.max.keyboards import MaxKeyboard, main_menu_only, to_attachments
+from app.adapters.max.keyboards import MaxKeyboard, to_attachments
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class MaxBotClient:
             raise ValueError("chat_id or user_id is required")
 
         body: dict[str, Any] = {"text": text or ""}
-        keyboard_attachments = to_attachments(keyboard or main_menu_only())
+        keyboard_attachments = to_attachments(keyboard)
         body_attachments = attachments or []
         if keyboard_attachments or body_attachments:
             body["attachments"] = body_attachments + (keyboard_attachments or [])
