@@ -74,6 +74,15 @@ from app.utils.validators import clean_text, normalize_phone, parse_positive_int
 
 logger = logging.getLogger(__name__)
 
+ESCAPE_TEXTS = {
+    keyboards.MAIN_MENU_TEXT.lower(),
+    "\u043c\u0435\u043d\u044e",
+    "\u0432 \u043c\u0435\u043d\u044e",
+    "\u043d\u0430\u0437\u0430\u0434",
+    "\u043e\u0442\u043c\u0435\u043d\u0430",
+    "/menu",
+}
+
 TEXT_TO_CALLBACK = {
     "Списать долги законно": "user:debts",
     "Хочу стать агентом": "agent:join",
@@ -104,7 +113,7 @@ TEXT_TO_CALLBACK = {
 
 
 async def send(client: MaxBotClient, event: IncomingEvent, text: str, keyboard=None) -> None:
-    await client.send_message(chat_id=event.chat_id, text=text, keyboard=keyboard)
+    await client.send_message(chat_id=event.chat_id, text=text, keyboard=keyboard or keyboards.main_menu_only())
 
 
 def _form_stat_line(label: str, item: dict[str, int | float]) -> str:
@@ -154,24 +163,32 @@ async def handle_update(client: MaxBotClient, event: IncomingEvent, settings: Se
         )
         await apply_developer_role_override(session, user)
 
-        data = event.callback_data or TEXT_TO_CALLBACK.get((event.text or "").strip())
-        if not data and (event.text or "").startswith("Уведомления:"):
+        raw_text = (event.text or "").strip()
+        normalized_text = raw_text.lower()
+
+        data = event.callback_data or TEXT_TO_CALLBACK.get(raw_text)
+        if not data and raw_text.startswith("Уведомления:"):
             data = "admin:toggle_notifications"
-        if event.text and event.text.startswith("/"):
+        if raw_text.startswith("/"):
             data = None
 
         if event.callback_id:
             await client.answer_callback(event.callback_id)
 
-        if event.text and event.text.startswith("/start"):
-            referrer_id = _extract_ref(event.text)
+        if raw_text.startswith("/start"):
+            referrer_id = _extract_ref(raw_text)
             if referrer_id:
                 await attach_referrer_by_internal_id(session, user, referrer_id)
             await clear_state(session, event.platform_user_id)
             await send(client, event, welcome_text(), keyboards.main_menu())
             return
 
-        if event.text == "/cancel":
+        if data == keyboards.MAIN_MENU_CALLBACK or normalized_text in ESCAPE_TEXTS:
+            await clear_state(session, event.platform_user_id)
+            await send(client, event, welcome_text(), keyboards.main_menu())
+            return
+
+        if raw_text == "/cancel":
             await clear_state(session, event.platform_user_id)
             await send(client, event, "Текущее действие отменено.", keyboards.main_menu())
             return
