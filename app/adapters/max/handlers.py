@@ -34,6 +34,7 @@ from app.services.developer import (
     test_mode_enabled,
 )
 from app.services.leads import (
+    append_agent_followup_answer,
     close_lead,
     create_agent_client_lead_draft,
     create_consultation_lead,
@@ -52,6 +53,7 @@ from app.services.referrals import (
 from app.services.sheets import enqueue_lead_sync
 from app.services.stats import admin_stats, manager_stats
 from app.services.users import get_or_create_platform_user, list_staff_by_platform, set_agent, set_client
+from app.utils.agent_client_followup import AGENT_CLIENT_DONE_TEXT, CALL_PHONE_SHARE_PROMPT, CLIENT_WARNING_PROMPT
 from app.utils.permissions import is_admin, is_manager
 from app.utils.text import (
     agent_welcome_text,
@@ -73,6 +75,11 @@ from app.utils.text import (
 from app.utils.validators import clean_text, normalize_phone, parse_positive_int
 
 logger = logging.getLogger(__name__)
+
+WARN_CLIENT_YES = "agent:warn_client:yes"
+WARN_CLIENT_NO = "agent:warn_client:no"
+SHARE_CALL_PHONE_YES = "agent:share_call_phone:yes"
+SHARE_CALL_PHONE_NO = "agent:share_call_phone:no"
 
 TEXT_TO_CALLBACK = {
     "Списать долги законно": "user:debts",
@@ -105,6 +112,15 @@ TEXT_TO_CALLBACK = {
 
 async def send(client: MaxBotClient, event: IncomingEvent, text: str, keyboard=None) -> None:
     await client.send_message(chat_id=event.chat_id, text=text, keyboard=keyboard)
+
+
+def _yes_no_choice(event: IncomingEvent, yes_callback: str, no_callback: str) -> bool | None:
+    value = (event.callback_data or event.text or "").strip().lower()
+    if value in {yes_callback, "да"}:
+        return True
+    if value in {no_callback, "нет"}:
+        return False
+    return None
 
 
 def _form_stat_line(label: str, item: dict[str, int | float]) -> str:
@@ -462,8 +478,42 @@ async def _handle_new_client_state(client: MaxBotClient, event: IncomingEvent, s
         lead = await get_lead(session, data["lead_id"])
         if lead:
             await update_agent_client_lead(session, lead, agent_payout_phone=payout_phone)
+        await set_state(session, event.platform_user_id, "new_client_warn", data)
+        await send(client, event, CLIENT_WARNING_PROMPT, keyboards.yes_no_menu(WARN_CLIENT_YES, WARN_CLIENT_NO))
+    elif state == "new_client_warn":
+        choice = _yes_no_choice(event, WARN_CLIENT_YES, WARN_CLIENT_NO)
+        if choice is None:
+            await send(client, event, CLIENT_WARNING_PROMPT, keyboards.yes_no_menu(WARN_CLIENT_YES, WARN_CLIENT_NO))
+            return True
+        lead = await get_lead(session, data["lead_id"]) if data.get("lead_id") else None
+        if lead:
+            await append_agent_followup_answer(
+                session,
+                lead,
+                "Получится предупредить знакомого",
+                "Да" if choice else "Нет",
+            )
+        if not choice:
+            await clear_state(session, event.platform_user_id)
+            await send(client, event, AGENT_CLIENT_DONE_TEXT, keyboards.agent_menu())
+            return True
+        await set_state(session, event.platform_user_id, "new_client_share_call_phone", data)
+        await send(client, event, CALL_PHONE_SHARE_PROMPT, keyboards.yes_no_menu(SHARE_CALL_PHONE_YES, SHARE_CALL_PHONE_NO))
+    elif state == "new_client_share_call_phone":
+        choice = _yes_no_choice(event, SHARE_CALL_PHONE_YES, SHARE_CALL_PHONE_NO)
+        if choice is None:
+            await send(client, event, CALL_PHONE_SHARE_PROMPT, keyboards.yes_no_menu(SHARE_CALL_PHONE_YES, SHARE_CALL_PHONE_NO))
+            return True
+        lead = await get_lead(session, data["lead_id"]) if data.get("lead_id") else None
+        if lead:
+            await append_agent_followup_answer(
+                session,
+                lead,
+                "Получится передать номер звонящего менеджера",
+                "Да" if choice else "Нет",
+            )
         await clear_state(session, event.platform_user_id)
-        await send(client, event, "<b>Спасибо.</b> Данные клиента переданы менеджерам «А7 Консалт».", keyboards.agent_menu())
+        await send(client, event, AGENT_CLIENT_DONE_TEXT, keyboards.agent_menu())
     return True
 
 

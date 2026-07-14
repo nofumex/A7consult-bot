@@ -17,8 +17,18 @@ def _button(text: str, callback_data: str | None = None, url: str | None = None,
 def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_button("Списать долги законно", "user:debts", style="success")],
             [_button("Хочу стать агентом", "agent:join", style="primary")],
+        ]
+    )
+
+
+def yes_no_menu(yes_callback: str, no_callback: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button("Да", yes_callback, style="success"),
+                _button("Нет", no_callback, style="danger"),
+            ]
         ]
     )
 

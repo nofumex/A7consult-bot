@@ -7,19 +7,25 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.keyboards.user_keyboards import agent_menu, agent_rules_menu, main_menu
+from app.keyboards.user_keyboards import agent_menu, agent_rules_menu, main_menu, yes_no_menu
 from app.models import User
 from app.services.bonuses import bonus_totals, recent_bonuses
 from app.services.developer import is_participant_user, test_mode_enabled
-from app.services.leads import create_agent_client_lead_draft, get_lead, update_agent_client_lead
+from app.services.leads import append_agent_followup_answer, create_agent_client_lead_draft, get_lead, update_agent_client_lead
 from app.services.referrals import recent_referrals
 from app.services.users import set_agent
 from app.states.manager_states import AgentClientStates
+from app.utils.agent_client_followup import AGENT_CLIENT_DONE_TEXT, CALL_PHONE_SHARE_PROMPT, CLIENT_WARNING_PROMPT
 from app.utils.assets import AGENT_IMAGE, PARTNER_IMAGE, local_photo
 from app.utils.text import agent_welcome_text, bonus_line, h, money, referral_rules_text
 from app.utils.validators import clean_text, normalize_phone
 
 router = Router(name="agent")
+
+WARN_CLIENT_YES = "agent:warn_client:yes"
+WARN_CLIENT_NO = "agent:warn_client:no"
+SHARE_CALL_PHONE_YES = "agent:share_call_phone:yes"
+SHARE_CALL_PHONE_NO = "agent:share_call_phone:no"
 
 
 @router.callback_query(F.data == "agent:join")
@@ -123,8 +129,42 @@ async def new_client_payout_phone(message: Message, state: FSMContext, session: 
     lead = await get_lead(session, data["lead_id"])
     if lead:
         await update_agent_client_lead(session, lead, agent_payout_phone=phone)
+    await state.set_state(AgentClientStates.waiting_client_warning)
+    await message.answer(CLIENT_WARNING_PROMPT, reply_markup=yes_no_menu(WARN_CLIENT_YES, WARN_CLIENT_NO))
+
+
+@router.callback_query(AgentClientStates.waiting_client_warning, F.data.in_({WARN_CLIENT_YES, WARN_CLIENT_NO}))
+async def new_client_warning_response(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    lead = await get_lead(session, data.get("lead_id")) if data.get("lead_id") else None
+    answer = "Нет" if callback.data == WARN_CLIENT_NO else "Да"
+    if lead:
+        await append_agent_followup_answer(session, lead, "Получится предупредить знакомого", answer)
+
+    if callback.data == WARN_CLIENT_NO:
+        await state.clear()
+        await callback.message.answer(AGENT_CLIENT_DONE_TEXT, reply_markup=agent_menu())
+        await callback.answer()
+        return
+
+    await state.set_state(AgentClientStates.waiting_call_phone_share)
+    await callback.message.answer(
+        CALL_PHONE_SHARE_PROMPT,
+        reply_markup=yes_no_menu(SHARE_CALL_PHONE_YES, SHARE_CALL_PHONE_NO),
+    )
+    await callback.answer()
+
+
+@router.callback_query(AgentClientStates.waiting_call_phone_share, F.data.in_({SHARE_CALL_PHONE_YES, SHARE_CALL_PHONE_NO}))
+async def new_client_call_phone_share_response(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    lead = await get_lead(session, data.get("lead_id")) if data.get("lead_id") else None
+    answer = "Нет" if callback.data == SHARE_CALL_PHONE_NO else "Да"
+    if lead:
+        await append_agent_followup_answer(session, lead, "Получится передать номер звонящего менеджера", answer)
     await state.clear()
-    await message.answer("<b>Спасибо.</b> Данные клиента переданы менеджерам «А7 Консалт».", reply_markup=agent_menu())
+    await callback.message.answer(AGENT_CLIENT_DONE_TEXT, reply_markup=agent_menu())
+    await callback.answer()
 
 
 @router.callback_query(F.data == "agent:bonuses")

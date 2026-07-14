@@ -7,6 +7,8 @@ class AgentClientStates(StatesGroup):
     waiting_relation = State()
     waiting_source_permission = State()
     waiting_payout_phone = State()
+    waiting_client_warning = State()
+    waiting_call_phone_share = State()
 
 
 class ChatStates(StatesGroup):

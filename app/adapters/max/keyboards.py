@@ -38,7 +38,11 @@ def to_attachments(keyboard: MaxKeyboard | None) -> list[dict] | None:
 
 
 def main_menu() -> MaxKeyboard:
-    return [[_btn("Списать долги законно", "user:debts")], [_btn("Хочу стать агентом", "agent:join")]]
+    return [[_btn("Хочу стать агентом", "agent:join")]]
+
+
+def yes_no_menu(yes_callback: str, no_callback: str) -> MaxKeyboard:
+    return [[_btn("Да", yes_callback), _btn("Нет", no_callback)]]
 
 
 def client_menu() -> MaxKeyboard:
