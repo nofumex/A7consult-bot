@@ -116,12 +116,6 @@ async def update_agent_client_lead(
     return lead
 
 
-async def append_agent_followup_answer(session: AsyncSession, lead: Lead, label: str, answer: str) -> Lead:
-    line = f"{label}: {answer}"
-    comment = f"{lead.comment}\n{line}" if lead.comment else line
-    return await update_agent_client_lead(session, lead, comment=comment)
-
-
 async def get_lead(session: AsyncSession, lead_id: int) -> Lead | None:
     return await session.get(Lead, lead_id)
 

@@ -12,7 +12,8 @@ from app.adapters.max.states import clear_state, get_state, set_state
 from app.config import Settings
 from app.database import SessionLocal
 from app.enums import BonusStatus, LeadStatus
-from app.models import Bonus, ChatSession, Lead, User
+from app.models import Bonus, ChatSession, Lead, SalesManager, User
+from app.services.amocrm import add_agent_followup_answer_note, ensure_sales_manager_assignment
 from app.services.bonuses import bonus_totals, create_bonus, recent_bonuses, set_bonus_status
 from app.services.chat_sessions import (
     close_session,
@@ -34,7 +35,6 @@ from app.services.developer import (
     test_mode_enabled,
 )
 from app.services.leads import (
-    append_agent_followup_answer,
     close_lead,
     create_agent_client_lead_draft,
     create_consultation_lead,
@@ -50,10 +50,17 @@ from app.services.referrals import (
     referral_leads_count,
     recent_referrals,
 )
+from app.services.sales_managers import list_sales_managers, sales_manager_line, set_sales_manager_enabled
 from app.services.sheets import enqueue_lead_sync
 from app.services.stats import admin_stats, manager_stats
 from app.services.users import get_or_create_platform_user, list_staff_by_platform, set_agent, set_client
-from app.utils.agent_client_followup import AGENT_CLIENT_DONE_TEXT, CALL_PHONE_SHARE_PROMPT, CLIENT_WARNING_PROMPT
+from app.utils.agent_client_followup import (
+    AGENT_CLIENT_DONE_TEXT,
+    CALL_PHONE_MANAGER_UNAVAILABLE_TEXT,
+    CALL_PHONE_SHARE_PROMPT,
+    CLIENT_WARNING_PROMPT,
+    call_phone_result_text,
+)
 from app.utils.permissions import is_admin, is_manager
 from app.utils.text import (
     agent_welcome_text,
@@ -107,6 +114,7 @@ TEXT_TO_CALLBACK = {
     "Заявки": "admin:leads",
     "Агенты": "admin:agents",
     "Бонусы": "admin:bonuses",
+    "Менеджеры": "admin:managers",
 }
 
 
@@ -487,7 +495,7 @@ async def _handle_new_client_state(client: MaxBotClient, event: IncomingEvent, s
             return True
         lead = await get_lead(session, data["lead_id"]) if data.get("lead_id") else None
         if lead:
-            await append_agent_followup_answer(
+            await add_agent_followup_answer_note(
                 session,
                 lead,
                 "Получится предупредить знакомого",
@@ -505,15 +513,32 @@ async def _handle_new_client_state(client: MaxBotClient, event: IncomingEvent, s
             await send(client, event, CALL_PHONE_SHARE_PROMPT, keyboards.yes_no_menu(SHARE_CALL_PHONE_YES, SHARE_CALL_PHONE_NO))
             return True
         lead = await get_lead(session, data["lead_id"]) if data.get("lead_id") else None
+        if not choice:
+            if lead:
+                await add_agent_followup_answer_note(
+                    session,
+                    lead,
+                    "Получится передать номер звонящего менеджера",
+                    "Нет",
+                )
+            await clear_state(session, event.platform_user_id)
+            await send(client, event, AGENT_CLIENT_DONE_TEXT, keyboards.agent_menu())
+            return True
+        manager = await ensure_sales_manager_assignment(session, lead) if lead else None
         if lead:
-            await append_agent_followup_answer(
+            await add_agent_followup_answer_note(
                 session,
                 lead,
                 "Получится передать номер звонящего менеджера",
-                "Да" if choice else "Нет",
+                "Да",
             )
         await clear_state(session, event.platform_user_id)
-        await send(client, event, AGENT_CLIENT_DONE_TEXT, keyboards.agent_menu())
+        await send(
+            client,
+            event,
+            call_phone_result_text(manager.phone) if manager else CALL_PHONE_MANAGER_UNAVAILABLE_TEXT,
+            keyboards.agent_menu(),
+        )
     return True
 
 
@@ -853,6 +878,39 @@ async def _handle_admin_callback(client: MaxBotClient, event: IncomingEvent, ses
                 f"<b>Рефералов:</b> {direct}\n"
                 f"<b>Начислено:</b> {money(totals['total'])} ₽\n"
                 f"<b>Выплачено:</b> {money(totals['paid'])} ₽",
+            )
+    elif data == "admin:managers":
+        managers = await list_sales_managers(session)
+        if not managers:
+            await send(client, event, "Менеджеры продаж не настроены.", keyboards.admin_panel(user.admin_notifications_enabled))
+        else:
+            await send(
+                client,
+                event,
+                "<b>Очередь менеджеров продаж</b>\n\n" + "\n".join(h(sales_manager_line(manager)) for manager in managers),
+                keyboards.admin_panel(user.admin_notifications_enabled),
+            )
+            for manager in managers:
+                await send(
+                    client,
+                    event,
+                    f"<b>{h(manager.name)}</b>\n"
+                    f"Телефон: <code>{h(manager.phone)}</code>\n"
+                    f"amoCRM user ID: <code>{manager.amo_user_id or 'не указан'}</code>\n"
+                    f"Статус: {'включен' if manager.enabled else 'отключен'}",
+                    keyboards.sales_manager_actions(manager.id, manager.enabled),
+                )
+    elif data.startswith("admin:sales_manager_toggle:"):
+        manager = await session.get(SalesManager, int(data.split(":")[-1]))
+        if not manager:
+            await send(client, event, "Менеджер не найден.", keyboards.admin_panel(user.admin_notifications_enabled))
+        else:
+            await set_sales_manager_enabled(session, manager, not manager.enabled)
+            await send(
+                client,
+                event,
+                f"{h(manager.name)}: {'включен' if manager.enabled else 'отключен'}.",
+                keyboards.sales_manager_actions(manager.id, manager.enabled),
             )
     elif data == "admin:bonuses":
         result = await session.execute(select(Bonus).join(User, Bonus.agent_id == User.id).where(User.platform == "max").order_by(Bonus.created_at.desc()).limit(10))

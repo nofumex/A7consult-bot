@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.config import Settings, get_settings
 from app.enums import LeadStatus
 from app.models import Lead, User
+from app.services.sales_managers import assign_sales_manager_if_needed
 
 logger = logging.getLogger(__name__)
 _STATUS_MAP_CACHE: dict[int, dict[str, int]] = {}
@@ -43,6 +44,7 @@ async def sync_lead_to_amocrm_by_id(lead_id: int) -> None:
             .options(
                 selectinload(Lead.user).selectinload(User.referrer),
                 selectinload(Lead.agent),
+                selectinload(Lead.sales_manager),
             )
         )
         lead = result.scalar_one_or_none()
@@ -56,7 +58,7 @@ async def sync_lead_to_amocrm(session: AsyncSession, lead: Lead) -> None:
         return
 
     try:
-        await session.refresh(lead, ["user", "agent"])
+        await session.refresh(lead, ["user", "agent", "sales_manager"])
         if lead.user:
             await session.refresh(lead.user, ["referrer"])
         async with AmoCrmClient(settings) as client:
@@ -71,6 +73,87 @@ async def sync_lead_to_amocrm(session: AsyncSession, lead: Lead) -> None:
         lead.amo_synced_at = datetime.utcnow()
         await session.commit()
         logger.exception("Failed to sync lead %s to amoCRM", lead.id)
+
+
+async def ensure_sales_manager_assignment(session: AsyncSession, lead: Lead):
+    manager = await assign_sales_manager_if_needed(session, lead)
+    await session.commit()
+    if not manager:
+        return None
+
+    settings = get_settings()
+    if not _is_configured(settings):
+        return manager
+
+    if not lead.amo_lead_id:
+        await sync_lead_to_amocrm(session, lead)
+        return manager
+
+    try:
+        async with AmoCrmClient(settings) as client:
+            current = await client.get_lead(int(lead.amo_lead_id))
+            if _as_int(current.get("pipeline_id")) != settings.amocrm_pipeline_id:
+                raise RuntimeError("amoCRM lead is outside the configured pipeline; skipped responsible assignment")
+            if manager.amo_user_id:
+                # Deliberately update only the responsible user. Omitting pipeline_id and status_id
+                # guarantees that manager assignment cannot move the deal to another stage or pipeline.
+                await client.request(
+                    "PATCH",
+                    f"/api/v4/leads/{lead.amo_lead_id}",
+                    json={"responsible_user_id": int(manager.amo_user_id)},
+                )
+            lead.amo_pipeline_id = _as_int(current.get("pipeline_id"))
+            lead.amo_status_id = _as_int(current.get("status_id"))
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to assign responsible sales manager for lead %s", lead.id)
+    return manager
+
+
+async def add_agent_followup_answer_note(session: AsyncSession, lead: Lead, label: str, answer: str) -> bool:
+    settings = get_settings()
+    if not _is_configured(settings):
+        return False
+
+    try:
+        await session.refresh(lead, ["user", "agent", "sales_manager"])
+        if lead.user:
+            await session.refresh(lead.user, ["referrer"])
+        if not lead.amo_lead_id:
+            await sync_lead_to_amocrm(session, lead)
+            await session.refresh(lead, ["user", "agent", "sales_manager"])
+        if not lead.amo_lead_id:
+            return False
+
+        async with AmoCrmClient(settings) as client:
+            current = await client.get_lead(int(lead.amo_lead_id))
+            if _as_int(current.get("pipeline_id")) != settings.amocrm_pipeline_id:
+                raise RuntimeError("amoCRM lead is outside the configured pipeline; skipped followup note")
+            await _add_lead_note(client, int(lead.amo_lead_id), _followup_answer_note(lead, label, answer))
+        return True
+    except Exception:
+        logger.exception("Failed to add followup answer note for lead %s", lead.id)
+        return False
+
+
+def _followup_answer_note(lead: Lead, label: str, answer: str) -> str:
+    lines = [
+        "Ответ агента по предупреждению клиента",
+        f"ID заявки в боте: {lead.id}",
+        f"Клиент: {_client_name(lead)}",
+        f"{label}: {answer}",
+    ]
+    if lead.sales_manager:
+        lines.extend(
+            [
+                "",
+                "Назначенный менеджер продаж",
+                f"Имя: {lead.sales_manager.name}",
+                f"Телефон: {lead.sales_manager.phone}",
+                f"amoCRM user ID: {lead.sales_manager.amo_user_id or ''}",
+            ]
+        )
+    return "\n".join(lines)
 
 
 class AmoCrmClient:
@@ -135,14 +218,17 @@ async def _update_amocrm_lead(client: AmoCrmClient, settings: Settings, lead: Le
     lead.amo_contact_id = lead.amo_contact_id or _extract_contact_id(current)
 
     payload: dict[str, Any] = {"name": _lead_name(lead)}
-    status_id = await _status_id_for_local_status(client, settings, lead.status)
-    if status_id:
-        payload["status_id"] = status_id
+    status_id = _as_int(current.get("status_id"))
+    if lead.status and lead.status != LeadStatus.NEW.value:
+        requested_status_id = await _status_id_for_local_status(client, settings, lead.status)
+        if requested_status_id:
+            payload["status_id"] = requested_status_id
+            status_id = requested_status_id
     await client.request("PATCH", f"/api/v4/leads/{lead.amo_lead_id}", json=payload)
     await _ensure_contact_details(client, lead, lead.amo_contact_id)
     await _add_lead_note(client, int(lead.amo_lead_id), _lead_note(lead))
     lead.amo_pipeline_id = settings.amocrm_pipeline_id
-    lead.amo_status_id = status_id or _as_int(current.get("status_id"))
+    lead.amo_status_id = status_id
     lead.amo_sync_status = "synced"
     lead.amo_sync_error = None
     lead.amo_synced_at = datetime.utcnow()
@@ -158,7 +244,16 @@ def _lead_payload(settings: Settings, lead: Lead, status_id: int | None) -> dict
     }
     if status_id:
         payload["status_id"] = status_id
+    responsible_user_id = _responsible_user_id(lead)
+    if responsible_user_id:
+        payload["responsible_user_id"] = responsible_user_id
     return payload
+
+
+def _responsible_user_id(lead: Lead) -> int | None:
+    if lead.sales_manager and lead.sales_manager.enabled and lead.sales_manager.amo_user_id:
+        return int(lead.sales_manager.amo_user_id)
+    return None
 
 
 def _contact_payload(lead: Lead) -> dict[str, Any]:

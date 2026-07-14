@@ -139,6 +139,11 @@ def admin_panel(notifications_enabled: bool = True) -> MaxKeyboard:
     ]
 
 
+def sales_manager_actions(manager_id: int, enabled: bool) -> MaxKeyboard:
+    toggle_text = "Отключить" if enabled else "Включить"
+    return [[_btn(toggle_text, f"admin:sales_manager_toggle:{manager_id}")], [_btn("Назад", "admin:managers")]]
+
+
 def chat_end_menu() -> MaxKeyboard:
     return [[_btn("Завершить чат", "chat:end")]]
 

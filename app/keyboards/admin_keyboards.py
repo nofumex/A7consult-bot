@@ -55,6 +55,17 @@ def user_admin_actions(user_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def sales_manager_actions(manager_id: int, enabled: bool) -> InlineKeyboardMarkup:
+    toggle_text = "Отключить" if enabled else "Включить"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button(toggle_text, f"admin:sales_manager_toggle:{manager_id}")],
+            [_button("Изменить данные", f"admin:sales_manager_edit:{manager_id}")],
+            [_button("Назад к менеджерам", "admin:managers")],
+        ]
+    )
+
+
 def developer_panel(status: dict[str, bool | int]) -> InlineKeyboardMarkup:
     def toggle_label(key: str) -> str:
         value = "Вкл" if status.get(key) else "Выкл"

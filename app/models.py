@@ -40,6 +40,26 @@ class User(Base):
     referrer: Mapped["User | None"] = relationship(remote_side=[id], lazy="selectin")
 
 
+class SalesManager(Base):
+    __tablename__ = "sales_managers"
+    __table_args__ = (UniqueConstraint("code", name="uq_sales_managers_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str] = mapped_column(String(64), nullable=False)
+    amo_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class Lead(Base):
     __tablename__ = "leads"
 
@@ -50,6 +70,7 @@ class Lead(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     agent_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     assigned_manager_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    sales_manager_id: Mapped[int | None] = mapped_column(ForeignKey("sales_managers.id"), nullable=True)
     client_name: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(64))
     city: Mapped[str | None] = mapped_column(String(255))
@@ -78,6 +99,7 @@ class Lead(Base):
     user: Mapped[User | None] = relationship(foreign_keys=[user_id], lazy="selectin")
     agent: Mapped[User | None] = relationship(foreign_keys=[agent_id], lazy="selectin")
     assigned_manager: Mapped[User | None] = relationship(foreign_keys=[assigned_manager_id], lazy="selectin")
+    sales_manager: Mapped[SalesManager | None] = relationship(lazy="selectin")
 
 
 class Bonus(Base):

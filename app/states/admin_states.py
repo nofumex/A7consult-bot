@@ -17,3 +17,7 @@ class BroadcastStates(StatesGroup):
 class DeveloperStates(StatesGroup):
     waiting_user_query = State()
     waiting_mute_user_query = State()
+
+
+class SalesManagerStates(StatesGroup):
+    waiting_details = State()

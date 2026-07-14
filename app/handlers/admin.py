@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.enums import BonusStatus, LeadStatus
-from app.keyboards.admin_keyboards import admin_back, admin_panel, user_admin_actions
+from app.keyboards.admin_keyboards import admin_back, admin_panel, sales_manager_actions, user_admin_actions
 from app.keyboards.manager_keyboards import lead_actions
-from app.models import Bonus, User
+from app.models import Bonus, SalesManager, User
 from app.services.bonuses import create_bonus, set_bonus_status
 from app.services.developer import (
     BONUS_NOTIFICATIONS,
@@ -30,9 +30,10 @@ from app.services.developer import (
 )
 from app.services.leads import get_lead, list_leads
 from app.services.referrals import referral_counts, referral_leads_count
+from app.services.sales_managers import list_sales_managers, sales_manager_line, set_sales_manager_enabled, update_sales_manager_details
 from app.services.stats import admin_stats
-from app.services.users import list_agents, list_managers, search_user, set_agent, set_client, set_regular
-from app.states.admin_states import AdminSearchStates, BonusStates, BroadcastStates
+from app.services.users import list_agents, search_user, set_agent, set_client, set_regular
+from app.states.admin_states import AdminSearchStates, BonusStates, BroadcastStates, SalesManagerStates
 from app.utils.permissions import is_admin
 from app.utils.text import bonus_status_label, full_name, h, lead_status_label, lead_summary, money, profile_text, username_text
 from app.utils.validators import clean_text, parse_positive_int
@@ -382,15 +383,93 @@ async def cb_bonus_cancel(callback: CallbackQuery, session: AsyncSession, curren
 async def cb_managers(callback: CallbackQuery, session: AsyncSession, current_user: User) -> None:
     if not await _ensure_admin_callback(callback, current_user):
         return
-    managers = await list_managers(session, platform="telegram")
+    managers = await list_sales_managers(session)
     if not managers:
-        await callback.message.answer("Менеджеры появятся здесь после первого входа в бот с ID из MANAGER_IDS.", reply_markup=admin_back())
-    else:
+        await callback.message.answer("Менеджеры продаж не настроены.", reply_markup=admin_back())
+        await callback.answer()
+        return
+
+    await callback.message.answer(
+        "<b>Очередь менеджеров продаж</b>\n\n"
+        "Сделки распределяются по очереди между включенными менеджерами. "
+        "Отключенного менеджера бот пропускает.\n\n"
+        + "\n".join(h(sales_manager_line(manager)) for manager in managers),
+        reply_markup=admin_back(),
+    )
+    for manager in managers:
         await callback.message.answer(
-            "Менеджеры\n\n" + "\n".join(f"{full_name(user)} ({username_text(user)}, {user.telegram_id})" for user in managers),
-            reply_markup=admin_back(),
+            f"<b>{h(manager.name)}</b>\n"
+            f"Телефон: <code>{h(manager.phone)}</code>\n"
+            f"amoCRM user ID: <code>{manager.amo_user_id or 'не указан'}</code>\n"
+            f"Статус: {'включен' if manager.enabled else 'отключен'}",
+            reply_markup=sales_manager_actions(manager.id, manager.enabled),
         )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:sales_manager_toggle:"))
+async def cb_sales_manager_toggle(callback: CallbackQuery, session: AsyncSession, current_user: User) -> None:
+    if not await _ensure_admin_callback(callback, current_user):
+        return
+    manager = await session.get(SalesManager, int(callback.data.split(":")[-1]))
+    if not manager:
+        await callback.answer("Менеджер не найден", show_alert=True)
+        return
+    await set_sales_manager_enabled(session, manager, not manager.enabled)
+    await callback.message.answer(
+        f"{h(manager.name)}: {'включен' if manager.enabled else 'отключен'}.",
+        reply_markup=sales_manager_actions(manager.id, manager.enabled),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:sales_manager_edit:"))
+async def cb_sales_manager_edit(callback: CallbackQuery, state: FSMContext, session: AsyncSession, current_user: User) -> None:
+    if not await _ensure_admin_callback(callback, current_user):
+        return
+    manager = await session.get(SalesManager, int(callback.data.split(":")[-1]))
+    if not manager:
+        await callback.answer("Менеджер не найден", show_alert=True)
+        return
+    await state.set_state(SalesManagerStates.waiting_details)
+    await state.update_data(sales_manager_id=manager.id)
+    await callback.message.answer(
+        "Отправьте новые данные менеджера в формате:\n"
+        "<code>Имя | телефон | amoCRM user ID</code>\n\n"
+        f"Сейчас: <code>{h(manager.name)} | {h(manager.phone)} | {manager.amo_user_id or ''}</code>"
+    )
+    await callback.answer()
+
+
+@router.message(SalesManagerStates.waiting_details, ~F.text.startswith("/"))
+async def process_sales_manager_details(message: Message, state: FSMContext, session: AsyncSession, current_user: User) -> None:
+    if not await _ensure_admin_message(message, current_user):
+        await state.clear()
+        return
+    data = await state.get_data()
+    manager = await session.get(SalesManager, data.get("sales_manager_id"))
+    if not manager:
+        await state.clear()
+        await message.answer("Менеджер не найден.", reply_markup=admin_back())
+        return
+
+    parts = [part.strip() for part in (message.text or "").split("|")]
+    if len(parts) != 3:
+        await message.answer("Нужно 3 части: Имя | телефон | amoCRM user ID")
+        return
+    name, phone, amo_user_id_raw = parts
+    try:
+        amo_user_id = int(amo_user_id_raw) if amo_user_id_raw else None
+        await update_sales_manager_details(session, manager, name=name, phone=phone, amo_user_id=amo_user_id)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+
+    await state.clear()
+    await message.answer(
+        "Данные менеджера обновлены:\n" + h(sales_manager_line(manager)),
+        reply_markup=sales_manager_actions(manager.id, manager.enabled),
+    )
 
 
 @router.callback_query(F.data == "admin:toggle_notifications")
