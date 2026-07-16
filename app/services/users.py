@@ -102,14 +102,14 @@ async def get_or_create_platform_user(
 
 
 async def set_agent(session: AsyncSession, user: User) -> User:
-    became_agent = not user.is_agent
     user.is_agent = True
     if not user.is_admin and not user.is_manager:
         user.role = UserRole.AGENT.value
     await session.commit()
     await session.refresh(user)
-    if became_agent:
-        enqueue_agent_amocrm_sync(user.id, "became_agent")
+    # Always reconcile the CRM stage. Existing users may already have is_agent=True
+    # from before the separate agent funnel was introduced.
+    enqueue_agent_amocrm_sync(user.id, "became_agent")
     return user
 
 
