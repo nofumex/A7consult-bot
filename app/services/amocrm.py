@@ -198,7 +198,10 @@ async def sync_agent_event_to_amocrm(
                     json=_agent_contact_payload(user),
                 )
 
-            record_every_event = event_type in {"client_data_submitted", "first_bonus_awarded"}
+            record_every_event = (
+                event_type in {"client_data_submitted", "first_bonus_awarded"}
+                and not payload.get("_backfill")
+            )
             if created or moved or record_every_event:
                 await _add_lead_note(
                     client,
