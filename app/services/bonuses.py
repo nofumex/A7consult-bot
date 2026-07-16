@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import BonusStatus
 from app.models import Bonus
+from app.services.amocrm import enqueue_agent_amocrm_sync
 
 
 async def bonus_totals(session: AsyncSession, agent_id: int) -> dict[str, int]:
@@ -49,6 +50,11 @@ async def create_bonus(
     session.add(bonus)
     await session.commit()
     await session.refresh(bonus)
+    enqueue_agent_amocrm_sync(
+        agent_id,
+        "first_bonus_awarded",
+        {"bonus_id": bonus.id, "amount": bonus.amount, "comment": bonus.comment or "", "lead_id": lead_id},
+    )
     return bonus
 
 

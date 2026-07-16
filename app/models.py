@@ -29,6 +29,12 @@ class User(Base):
     is_manager: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     admin_notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    amo_agent_lead_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
+    amo_agent_contact_id: Mapped[int | None] = mapped_column(BigInteger)
+    amo_agent_status_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    amo_agent_sync_status: Mapped[str | None] = mapped_column(String(32))
+    amo_agent_sync_error: Mapped[str | None] = mapped_column(Text)
+    amo_agent_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

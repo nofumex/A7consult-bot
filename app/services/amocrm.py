@@ -18,10 +18,29 @@ from app.services.sales_managers import assign_sales_manager_if_needed
 logger = logging.getLogger(__name__)
 _STATUS_MAP_CACHE: dict[int, dict[str, int]] = {}
 _CONTACT_FIELD_CACHE: dict[str, dict[str, Any]] | None = None
+_AGENT_SYNC_LOCKS: dict[int, asyncio.Lock] = {}
+
+AGENT_PIPELINE_STATUSES = [
+    "Подписался на бота",
+    "Стал агентом",
+    "Оставил данные клиента",
+    "Начислен первый бонус",
+]
+AGENT_EVENT_STATUS_MAP = {
+    "subscribed": "Подписался на бота",
+    "became_agent": "Стал агентом",
+    "client_data_submitted": "Оставил данные клиента",
+    "first_bonus_awarded": "Начислен первый бонус",
+}
+AGENT_STAGE_RANK = {name: index for index, name in enumerate(AGENT_PIPELINE_STATUSES)}
 
 
 def _is_configured(settings: Settings) -> bool:
     return bool(settings.amocrm_base_url and settings.amocrm_access_token and settings.amocrm_pipeline_id)
+
+
+def _is_agent_pipeline_configured(settings: Settings) -> bool:
+    return bool(settings.amocrm_base_url and settings.amocrm_access_token and settings.amocrm_agent_pipeline_id)
 
 
 def enqueue_amocrm_sync(lead_id: int) -> None:
@@ -73,6 +92,174 @@ async def sync_lead_to_amocrm(session: AsyncSession, lead: Lead) -> None:
         lead.amo_synced_at = datetime.utcnow()
         await session.commit()
         logger.exception("Failed to sync lead %s to amoCRM", lead.id)
+
+
+def enqueue_agent_amocrm_sync(user_id: int, event_type: str, payload: dict[str, Any] | None = None) -> None:
+    settings = get_settings()
+    if not _is_agent_pipeline_configured(settings):
+        return
+    if event_type not in AGENT_EVENT_STATUS_MAP:
+        logger.warning("Skipped unknown agent amoCRM event %s for user %s", event_type, user_id)
+        return
+    try:
+        asyncio.get_running_loop().create_task(
+            sync_agent_to_amocrm_by_id(user_id, event_type, dict(payload or {}))
+        )
+    except RuntimeError:
+        logger.warning("No running event loop; skipped agent amoCRM sync for user %s", user_id)
+
+
+async def sync_agent_to_amocrm_by_id(
+    user_id: int,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    from app.database import SessionLocal
+
+    lock = _AGENT_SYNC_LOCKS.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        async with SessionLocal() as session:
+            user = await session.get(User, user_id)
+            if user:
+                await sync_agent_event_to_amocrm(session, user, event_type, payload)
+
+
+async def sync_agent_event_to_amocrm(
+    session: AsyncSession,
+    user: User,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    settings = get_settings()
+    if not _is_agent_pipeline_configured(settings):
+        return
+    target_name = AGENT_EVENT_STATUS_MAP.get(event_type)
+    if not target_name:
+        raise ValueError(f"Unknown agent amoCRM event: {event_type}")
+
+    payload = payload or {}
+    pipeline_id = int(settings.amocrm_agent_pipeline_id)
+    try:
+        async with AmoCrmClient(settings) as client:
+            status_map = await _pipeline_status_map_by_id(client, pipeline_id)
+            target_status_id = status_map.get(target_name)
+            if not target_status_id:
+                raise RuntimeError(f"amoCRM agent pipeline status is missing: {target_name}")
+
+            created = False
+            moved = False
+            if not user.amo_agent_lead_id:
+                create_payload = [{
+                    "name": _agent_deal_name(user),
+                    "pipeline_id": pipeline_id,
+                    "status_id": target_status_id,
+                    "request_id": f"a7_agent_{user.platform}_{user.id}",
+                    "tags_to_add": [
+                        {"name": "a7consult-bot"},
+                        {"name": "реферальная программа"},
+                        {"name": user.platform or "bot"},
+                    ],
+                    "_embedded": {"contacts": [_agent_contact_payload(user)]},
+                }]
+                data = await client.request("POST", "/api/v4/leads/complex", json=create_payload)
+                created_data = data[0] if isinstance(data, list) and data else {}
+                user.amo_agent_lead_id = _as_int(created_data.get("id"))
+                user.amo_agent_contact_id = _extract_contact_id(created_data)
+                if not user.amo_agent_lead_id:
+                    raise RuntimeError("amoCRM response did not include agent lead id")
+                user.amo_agent_status_id = target_status_id
+                # Persist the remote IDs before secondary contact/note requests. If one of those
+                # requests fails, a later retry updates this deal instead of creating a duplicate.
+                user.amo_agent_sync_status = "syncing"
+                user.amo_agent_sync_error = None
+                user.amo_agent_synced_at = datetime.utcnow()
+                await session.commit()
+                created = True
+            else:
+                current = await client.get_lead(int(user.amo_agent_lead_id))
+                if _as_int(current.get("pipeline_id")) != pipeline_id:
+                    raise RuntimeError("amoCRM agent lead is outside the configured agent pipeline; skipped")
+                user.amo_agent_contact_id = user.amo_agent_contact_id or _extract_contact_id(current)
+                current_status_id = _as_int(current.get("status_id"))
+                current_name = next((name for name, status_id in status_map.items() if status_id == current_status_id), None)
+                update_payload: dict[str, Any] = {"name": _agent_deal_name(user)}
+                if current_name in AGENT_STAGE_RANK and AGENT_STAGE_RANK[target_name] > AGENT_STAGE_RANK[current_name]:
+                    update_payload["status_id"] = target_status_id
+                    user.amo_agent_status_id = target_status_id
+                    moved = True
+                else:
+                    user.amo_agent_status_id = current_status_id
+                await client.request("PATCH", f"/api/v4/leads/{user.amo_agent_lead_id}", json=update_payload)
+
+            if user.amo_agent_contact_id:
+                await client.request(
+                    "PATCH",
+                    f"/api/v4/contacts/{user.amo_agent_contact_id}",
+                    json=_agent_contact_payload(user),
+                )
+
+            record_every_event = event_type in {"client_data_submitted", "first_bonus_awarded"}
+            if created or moved or record_every_event:
+                await _add_lead_note(
+                    client,
+                    int(user.amo_agent_lead_id),
+                    _agent_event_note(user, event_type, payload),
+                )
+
+        user.amo_agent_sync_status = "synced"
+        user.amo_agent_sync_error = None
+        user.amo_agent_synced_at = datetime.utcnow()
+        await session.commit()
+    except Exception as exc:
+        user.amo_agent_sync_status = "error"
+        user.amo_agent_sync_error = str(exc)[:1000]
+        user.amo_agent_synced_at = datetime.utcnow()
+        await session.commit()
+        logger.exception("Failed to sync agent user %s event %s to amoCRM", user.id, event_type)
+
+
+def _agent_deal_name(user: User) -> str:
+    source = "MAX" if user.platform == "max" else "Telegram"
+    identity = f"@{user.username}" if user.username else _user_name(user)
+    return f"Агент {source} - {identity or user.platform_user_id or user.id}"
+
+
+def _agent_contact_payload(user: User) -> dict[str, Any]:
+    payload: dict[str, Any] = {"name": _user_name(user) or f"Агент {user.id}"}
+    if user.phone:
+        payload["custom_fields_values"] = [
+            {"field_code": "PHONE", "values": [{"value": user.phone, "enum_code": "WORK"}]}
+        ]
+    return payload
+
+
+def _agent_event_note(user: User, event_type: str, payload: dict[str, Any]) -> str:
+    event_labels = {
+        "subscribed": "Пользователь запустил бот",
+        "became_agent": "Пользователь стал агентом реферальной программы",
+        "client_data_submitted": "Агент оставил имя и телефон клиента",
+        "first_bonus_awarded": "Агенту начислен бонус",
+    }
+    lines = [
+        event_labels[event_type],
+        f"ID пользователя в боте: {user.id}",
+        f"Платформа: {'MAX' if user.platform == 'max' else 'Telegram'}",
+        f"Username: {_username(user)}",
+        f"Телефон агента: {user.phone or ''}",
+    ]
+    if event_type == "client_data_submitted":
+        lines.extend([
+            f"ID клиентской заявки: {payload.get('lead_id') or ''}",
+            f"Имя клиента: {payload.get('client_name') or ''}",
+            f"Телефон клиента: {payload.get('phone') or ''}",
+        ])
+    if event_type == "first_bonus_awarded":
+        lines.extend([
+            f"ID бонуса: {payload.get('bonus_id') or ''}",
+            f"Сумма: {payload.get('amount') or ''} руб.",
+            f"Комментарий: {payload.get('comment') or ''}",
+        ])
+    return "\n".join(lines)
 
 
 async def ensure_sales_manager_assignment(session: AsyncSession, lead: Lead):
@@ -501,8 +688,8 @@ async def amocrm_status_to_local_status(client: AmoCrmClient, settings: Settings
 
 
 async def _pipeline_status_map(client: AmoCrmClient, settings: Settings) -> dict[str, int]:
-    cache_key = settings.amocrm_pipeline_id or 0
-    cached = _STATUS_MAP_CACHE.get(cache_key)
+    pipeline_id = int(settings.amocrm_pipeline_id or 0)
+    cached = _STATUS_MAP_CACHE.get(pipeline_id)
     if cached:
         return cached
 
@@ -510,7 +697,20 @@ async def _pipeline_status_map(client: AmoCrmClient, settings: Settings) -> dict
     statuses = pipeline.get("_embedded", {}).get("statuses", [])
     ordered = sorted(statuses, key=lambda item: item.get("sort", 0))
     status_map = {str(item.get("name") or item.get("id")): int(item["id"]) for item in ordered if item.get("id")}
-    _STATUS_MAP_CACHE[cache_key] = status_map
+    _STATUS_MAP_CACHE[pipeline_id] = status_map
+    return status_map
+
+
+async def _pipeline_status_map_by_id(client: AmoCrmClient, pipeline_id: int) -> dict[str, int]:
+    cached = _STATUS_MAP_CACHE.get(pipeline_id)
+    if cached:
+        return cached
+
+    pipeline = await client.request("GET", f"/api/v4/leads/pipelines/{pipeline_id}")
+    statuses = pipeline.get("_embedded", {}).get("statuses", [])
+    ordered = sorted(statuses, key=lambda item: item.get("sort", 0))
+    status_map = {str(item.get("name") or item.get("id")): int(item["id"]) for item in ordered if item.get("id")}
+    _STATUS_MAP_CACHE[pipeline_id] = status_map
     return status_map
 
 

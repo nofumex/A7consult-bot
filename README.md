@@ -54,6 +54,7 @@ python -m app.main
 - `GOOGLE_SHEETS_ID`, `GOOGLE_SHEETS_WORKSHEET`, `GOOGLE_SERVICE_ACCOUNT_FILE` — опциональная синхронизация заявок в Google Sheets через service account.
 - `AMOCRM_BASE_URL`, `AMOCRM_ACCESS_TOKEN`, `AMOCRM_PIPELINE_ID` — односторонняя синхронизация заявок в amoCRM.
 - `AMOCRM_STATUS_ID_NEW`, `AMOCRM_STATUS_ID_IN_PROGRESS`, `AMOCRM_STATUS_ID_CLOSED`, `AMOCRM_STATUS_ID_CANCELED` — соответствие статусов бота этапам amoCRM.
+- `AMOCRM_AGENT_PIPELINE_ID` — отдельная воронка жизненного цикла пользователей реферальной программы (по умолчанию `11110422`); клиентские заявки продолжают использовать `AMOCRM_PIPELINE_ID`.
 - `AGENT_CLIENT_NOTIFICATION_DELAY_SECONDS` — задержка уведомления менеджеров о новом клиенте от агента, по умолчанию `60`.
 
 Секреты хранятся только в локальном `.env`. Не коммитьте `.env`, service account JSON и локальную базу `bot.db`: они исключены через `.gitignore`.

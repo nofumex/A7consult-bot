@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import LeadStatus, LeadType
 from app.models import Lead, User
-from app.services.amocrm import enqueue_amocrm_sync
+from app.services.amocrm import enqueue_agent_amocrm_sync, enqueue_amocrm_sync
 from app.services.sheets import enqueue_lead_sync
 
 
@@ -71,6 +71,11 @@ async def create_agent_client_lead(
     await session.commit()
     await session.refresh(lead, ["agent"])
     enqueue_lead_sync(lead.id)
+    enqueue_agent_amocrm_sync(
+        agent.id,
+        "client_data_submitted",
+        {"lead_id": lead.id, "client_name": lead.client_name, "phone": lead.phone},
+    )
     return lead
 
 
@@ -113,6 +118,12 @@ async def update_agent_client_lead(
     await session.refresh(lead, ["agent"])
     enqueue_lead_sync(lead.id)
     enqueue_amocrm_sync(lead.id)
+    if phone is not None and lead.agent_id and lead.client_name and lead.phone:
+        enqueue_agent_amocrm_sync(
+            lead.agent_id,
+            "client_data_submitted",
+            {"lead_id": lead.id, "client_name": lead.client_name, "phone": lead.phone},
+        )
     return lead
 
 

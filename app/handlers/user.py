@@ -12,6 +12,7 @@ from app.config import Settings
 from app.keyboards.manager_keyboards import lead_actions
 from app.keyboards.user_keyboards import about_menu, client_menu, main_menu, request_phone_reply
 from app.models import User
+from app.services.amocrm import enqueue_agent_amocrm_sync
 from app.services.leads import create_consultation_lead, create_question_lead
 from app.services.notifications import notify_staff
 from app.services.developer import is_participant_user, test_mode_enabled
@@ -43,6 +44,7 @@ async def cmd_start(
     referrer_telegram_id = _extract_referrer_id(message.text)
     if referrer_telegram_id:
         await attach_referrer(session, current_user, referrer_telegram_id)
+    enqueue_agent_amocrm_sync(current_user.id, "subscribed")
     await message.answer(welcome_text(), reply_markup=main_menu())
 
 

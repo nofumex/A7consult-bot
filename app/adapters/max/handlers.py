@@ -13,7 +13,7 @@ from app.config import Settings
 from app.database import SessionLocal
 from app.enums import BonusStatus, LeadStatus
 from app.models import Bonus, ChatSession, Lead, SalesManager, User
-from app.services.amocrm import add_agent_followup_answer_note, ensure_sales_manager_assignment
+from app.services.amocrm import add_agent_followup_answer_note, enqueue_agent_amocrm_sync, ensure_sales_manager_assignment
 from app.services.bonuses import bonus_totals, create_bonus, recent_bonuses, set_bonus_status
 from app.services.chat_sessions import (
     close_session,
@@ -191,6 +191,7 @@ async def handle_update(client: MaxBotClient, event: IncomingEvent, settings: Se
             referrer_id = _extract_ref(event.text)
             if referrer_id:
                 await attach_referrer_by_internal_id(session, user, referrer_id)
+            enqueue_agent_amocrm_sync(user.id, "subscribed")
             await clear_state(session, event.platform_user_id)
             await send(client, event, welcome_text(), keyboards.main_menu())
             return

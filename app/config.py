@@ -79,6 +79,7 @@ class Settings:
     amocrm_status_id_in_progress: int | None
     amocrm_status_id_closed: int | None
     amocrm_status_id_canceled: int | None
+    amocrm_agent_pipeline_id: int | None
     agent_client_notification_delay_seconds: int
 
     @property
@@ -131,5 +132,6 @@ def get_settings() -> Settings:
         amocrm_status_id_in_progress=_parse_int(getenv("AMOCRM_STATUS_ID_IN_PROGRESS"), 0) or None,
         amocrm_status_id_closed=_parse_int(getenv("AMOCRM_STATUS_ID_CLOSED"), 142) or None,
         amocrm_status_id_canceled=_parse_int(getenv("AMOCRM_STATUS_ID_CANCELED"), 143) or None,
+        amocrm_agent_pipeline_id=_parse_int(getenv("AMOCRM_AGENT_PIPELINE_ID"), 11110422) or None,
         agent_client_notification_delay_seconds=_parse_int(getenv("AGENT_CLIENT_NOTIFICATION_DELAY_SECONDS"), 60),
     )

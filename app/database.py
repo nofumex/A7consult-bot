@@ -32,6 +32,18 @@ async def _migrate_sqlite(conn) -> None:
         await conn.execute(text("UPDATE users SET platform_user_id = CAST(telegram_id AS TEXT) WHERE platform_user_id IS NULL"))
     if "phone" not in user_columns:
         await conn.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(64)"))
+    if "amo_agent_lead_id" not in user_columns:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN amo_agent_lead_id BIGINT"))
+    if "amo_agent_contact_id" not in user_columns:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN amo_agent_contact_id BIGINT"))
+    if "amo_agent_status_id" not in user_columns:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN amo_agent_status_id BIGINT"))
+    if "amo_agent_sync_status" not in user_columns:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN amo_agent_sync_status VARCHAR(32)"))
+    if "amo_agent_sync_error" not in user_columns:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN amo_agent_sync_error TEXT"))
+    if "amo_agent_synced_at" not in user_columns:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN amo_agent_synced_at DATETIME"))
 
     lead_columns = await conn.run_sync(lambda sync_conn: {row[1] for row in sync_conn.exec_driver_sql("PRAGMA table_info(leads)")})
     if "platform" not in lead_columns:
@@ -63,6 +75,8 @@ async def _migrate_sqlite(conn) -> None:
     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_platform ON users(platform)"))
     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_platform_user_id ON users(platform_user_id)"))
     await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_platform_user ON users(platform, platform_user_id)"))
+    await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_amo_agent_lead_id ON users(amo_agent_lead_id)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_amo_agent_status_id ON users(amo_agent_status_id)"))
     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_leads_platform ON leads(platform)"))
     await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_leads_amo_lead_id ON leads(amo_lead_id)"))
     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_leads_amo_pipeline_id ON leads(amo_pipeline_id)"))
